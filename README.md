@@ -1,0 +1,1 @@
+[![](https://github.com/docker-hub-tm/circleci-executors_trailing-whitespace/workflows/build/badge.svg)](https://github.com/docker-hub-tm/circleci-executors_trailing-whitespace/actions?query=workflow%3Abuild)
