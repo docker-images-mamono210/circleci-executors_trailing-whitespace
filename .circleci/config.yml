@@ -1,0 +1,144 @@
+---
+version: 2.1
+
+executors:
+  docker:
+    docker:
+      - image: cimg/base:2022.09
+  detect-secrets:
+    docker:
+      - image: cimg/python:3.14
+    resource_class: small
+  trailing-whitespace:
+    docker:
+      - image: ghcr.io/docker-images-mamono210/circleci-executors/trailing-whitespace:latest
+    resource_class: small
+
+orbs:
+  yamllint: orbss/yamllint@0.0.4
+
+jobs:
+  detect-secrets:
+    executor: detect-secrets
+    steps:
+      - checkout
+      - run:
+          name: Install detect-secrets
+          command: |
+            pip install detect-secrets jq
+      - run:
+          name: Run detect-secrets scan
+          command: |
+            detect-secrets scan --disable-plugin KeywordDetector \
+            | jq .results > results.json
+      - run:
+          name: Check for vulnerabilities
+          command: |
+            if [ "$(cat results.json | wc -w)" -gt 2 ]; then
+              echo "vulnerability was found"
+              detect-secrets scan | jq .results -C
+              exit 1
+            fi
+      - run:
+          name: Show detect-secrets version
+          command: |
+            pip list | grep detect-secrets \
+            | GREP_COLORS='mt=01;34' egrep --color=always '[[:digit:]]' \
+            | GREP_COLORS='mt=01;34' egrep --color=always '\.' \
+            | GREP_COLORS='mt=01;33' egrep --color=always 'detect-secrets.* '
+  docker-build-and-push:
+    executor: docker
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Login to GitHub Container Registry
+          command: |
+            echo "${CR_PAT}" | docker login ghcr.io -u "${CIRCLE_PROJECT_USERNAME}" --password-stdin
+      - run:
+          name: Build image
+          command: |
+            docker build -t trailing-whitespace:test .
+      - run:
+          name: Compute tag
+          command: |
+            set -euo pipefail
+
+            # Date
+            DATE_TAG="$(date +%Y%m%d)"
+
+            # python version (ex: "Python 3.14.2")
+            PY_FULL="$(docker run --rm trailing-whitespace:test python --version | awk '{print $2}')"
+
+            # python major.minor (ex: 3.14)
+            PY_MM="$(echo "$PY_FULL" | awk -F. '{print $1 "." $2}')"
+
+            PY_TAG_FULL="py${PY_FULL}"
+            PY_MM_TAG="py${PY_MM}"
+
+            TAG_FULL="${PY_TAG_FULL}-${DATE_TAG}"
+            TAG_MM="${PY_MM_TAG}-${DATE_TAG}"
+
+            echo "DATE_TAG=$DATE_TAG"
+            echo "PY_FULL=$PY_FULL"
+            echo "PY_MM=$PY_MM"
+            echo "TAG_FULL=$TAG_FULL"
+            echo "TAG_MM=$TAG_MM"
+
+            echo "export DATE_TAG=$DATE_TAG" >> $BASH_ENV
+            echo "export PY_FULL=$PY_FULL" >> $BASH_ENV
+            echo "export PY_MM=$PY_MM" >> $BASH_ENV
+            echo "export IMAGE_TAG_FULL=$TAG_FULL" >> $BASH_ENV
+            echo "export IMAGE_TAG_MM=$TAG_MM" >> $BASH_ENV
+      - run:
+          name: Push image with version tag
+          command: |
+            set -euo pipefail
+            source $BASH_ENV
+
+            IMAGE="ghcr.io/docker-images-mamono210/circleci-executors/trailing-whitespace"
+
+            docker tag trailing-whitespace:test "${IMAGE}:${IMAGE_TAG_FULL}"
+            docker push "${IMAGE}:${IMAGE_TAG_FULL}"
+
+            docker tag trailing-whitespace:test "${IMAGE}:${IMAGE_TAG_MM}"
+            docker push "${IMAGE}:${IMAGE_TAG_MM}"
+      - run:
+          name: Push image with latest-py tag (recommended)
+          command: |
+            set -euo pipefail
+            source $BASH_ENV
+
+            IMAGE="ghcr.io/docker-images-mamono210/circleci-executors/trailing-whitespace"
+
+            docker tag trailing-whitespace:test "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+  yamllint:
+    executor: yamllint/default
+    steps:
+      - checkout
+      - yamllint/execute
+  trailing-whitespace:
+    executor: trailing-whitespace
+    steps:
+      - checkout
+      - run:
+          name: Execute trailing-whitespace
+          command: trailing-whitespace
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - trailing-whitespace
+      - yamllint:
+          requires:
+            - trailing-whitespace
+      - detect-secrets:
+          requires:
+            - yamllint
+      - docker-build-and-push:
+          context: ghcr
+          requires:
+            - detect-secrets
