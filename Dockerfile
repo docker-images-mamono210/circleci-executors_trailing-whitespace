@@ -1,4 +1,4 @@
-FROM python:3-slim
+FROM python:3.14-slim
 
 # Install required packages
 RUN apt-get update \
